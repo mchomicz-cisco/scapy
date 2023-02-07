@@ -9,25 +9,28 @@
 BGP (Border Gateway Protocol).
 """
 
-import struct
+from __future__ import absolute_import
+
 import re
 import socket
+import struct
 
+import scapy.libs.six as six
 from scapy import pton_ntop
-from scapy.packet import Packet, Packet_metaclass, bind_layers
-from scapy.fields import (Field, BitField, BitEnumField, XBitField, ByteField,
-                          ByteEnumField, ShortField, ShortEnumField, IntField,
-                          IntEnumField, LongField, IEEEFloatField, StrField,
-                          StrLenField, StrFixedLenField, FieldLenField,
-                          FieldListField, PacketField, PacketListField,
-                          IPField, FlagsField, ConditionalField,
-                          MultiEnumField)
+from scapy.compat import chb, orb
+from scapy.config import ConfClass, conf
+from scapy.error import log_runtime
+from scapy.fields import (BitEnumField, BitField, BitFieldLenField,
+                          ByteEnumField, ByteField, ConditionalField, Field,
+                          FieldLenField, FieldListField, FlagsField,
+                          IEEEFloatField, IntEnumField, IntField, IPField,
+                          LongField, MultiEnumField, PacketField,
+                          PacketLenField, PacketListField, ShortEnumField,
+                          ShortField, StrField, StrFixedLenField, StrLenField,
+                          XBitField)
 from scapy.layers.inet import TCP
 from scapy.layers.inet6 import IP6Field
-from scapy.config import conf, ConfClass
-from scapy.compat import orb, chb
-from scapy.error import log_runtime
-
+from scapy.packet import Packet, Packet_metaclass, bind_layers
 
 #
 # Module configuration
@@ -267,6 +270,8 @@ class BGPNLRI_IPv6_AP(BGPNLRI_IPv6):
     name = "IPv6 NLRI (Additional Path)"
     fields_desc = [IntField("nlri_path_id", 0),
                    BGPFieldIPv6("prefix", "::/0")]
+    
+    
 
 
 class BGPNLRIPacketListField(PacketListField):
@@ -633,7 +638,7 @@ class _BGPCapability_metaclass(_BGPCap_metaclass, Packet_metaclass):
     pass
 
 
-class BGPCapability(Packet, metaclass=_BGPCapability_metaclass):
+class BGPCapability(six.with_metaclass(_BGPCapability_metaclass, Packet)):
     """
     Generic BGP capability.
     """
@@ -1857,6 +1862,9 @@ class BGPPAExtComms(Packet):
         )
     ]
 
+# class LocalNodeDescriptorsListField(PacketListField):
+#     def getfield(self, pkt, s):
+#         if pkt.type:
 
 class MPReachNLRIPacketListField(PacketListField):
     """
@@ -1880,6 +1888,10 @@ class MPReachNLRIPacketListField(PacketListField):
                     remain = remain[length_in_bytes + 1:]
                     prefix = self.m2i(pkt, current)
                     lst.append(prefix)
+                    
+        elif pkt.afi == 16388:
+            if pkt.safi == 71:
+                print(remain)
 
         return remain, lst
 
@@ -1904,8 +1916,10 @@ class BGPPAMPReachNLRI(Packet):
                          lambda x: x.afi == 2 and x.nh_addr_len == 32),
         ConditionalField(IP6Field("nh_v6_link_local", "::"),
                          lambda x: x.afi == 2 and x.nh_addr_len == 32),
+        ConditionalField(IPField("nh_ls_addr", "0.0.0.0"),
+                         lambda x: x.afi == 16388 and x.nh_addr_len == 4),
         ByteField("reserved", 0),
-        MPReachNLRIPacketListField("nlri", [], BGPNLRI_IPv6)]
+        MPReachNLRIPacketListField("nlri", [], BGPNLRI_IPv4, BGPNLRI_IPv6)]
 
     def post_build(self, p, pay):
         if self.nlri is None:
@@ -2144,7 +2158,155 @@ class BGPPathAttr(Packet):
 
         return packet + pay
 
+link_state_nlri = {
+    1: "node nlri",
+    2: "link nlri",
+    3: "ipv4 topology prefix nlri",
+    4: "ipv6 topology prefix nlri"
+}
 
+link_state_protocol_id = {
+    1: "IS-IS Level 1",
+    2: "IS-IS Level 2 ",
+    3: "OSPFv2",
+    4: "Direct",
+    5: "Static configuration",
+    6: "OSPFv3"
+}
+
+link_state_nlri_sub_type = {
+    256: "local node descriptor",
+    257: "remote node descriptor"
+}
+
+link_state_node_descriptor_sub_tlv = {
+    512: "autonomous system",
+    513: "bgp-ls identifier",
+    514: "ospf area-id",
+    515: "igp router-id",
+}
+
+
+class BGPLinkStateNLRI(Packet):
+    name = "LINKSTATENLRI"
+    fields_desc = [
+        ShortField("type", 0),
+        ShortField("length", 0)
+    ]
+
+
+class BGPLinkStateLocalNodeDescriptor(Packet):
+    name = "BGPLOCALNODEDESCRIPTOR"
+    fields_desc = [
+        ShortEnumField("type", 0, {512: "bla512", 514: "bla514"}),
+        ShortField("length", 0),
+        IntField("value", "")
+        
+    ] 
+    
+    def extract_padding(self, p):
+        """any thing after this packet is extracted is padding"""
+        return "",p
+
+
+class BGPLinkStateLocalNodeDescriptorAutonomousSystem(BGPLinkStateLocalNodeDescriptor):
+    name = "AUTONOMOUS SYSTEM"
+    fields_desc = [
+        # ShortField("type", 512),
+        # ShortField("length", 0),
+        IntField("autonomous_system", 0)
+    ]
+
+class BGPLinkStateLocalNodeDescriptorBgpLsId(BGPLinkStateLocalNodeDescriptor):
+    name = "BGP-LS ID"
+    fields_desc = [
+        # ShortField("type", 513),
+        # ShortField("length", 0),
+        IntField("bgpls_identified", 0)
+    ]
+
+
+
+# class BGPLocalNodePacketListField(PacketListField):
+    
+#     def m2i(self, pkt, m):
+#         if m.type == 512:
+#             return BGPLinkStateLocalNodeDescriptorAutonomousSystem(m)
+        
+#         elif m.type == 513:
+#             return BGPLinkStateLocalNodeDescriptorBgpLsId(m)
+        
+#         else:
+#             return None
+
+class BGPLinkStateLocalNodeDescriptorTLV(Packet):
+    name = "LOCALNODEDESCRIPTOR TLV"
+    fields_desc = [
+        ShortEnumField("type", 0, link_state_node_descriptor_sub_tlv),
+        ShortField("length", 0),
+    #     # FieldLenField("node_length", None, length_of="p.length"),
+    #     # BGPLocalNodePacketListField(
+    #     PacketListField(    
+    #         "local_node_descriptors", 
+    #         [], 
+    #         BGPLinkStateLocalNodeDescriptor, 
+    #         length_from=lambda p: p.length,
+    #     )        
+    ]
+
+class BGPLinkStateRemoteNodeDescriptor(Packet):
+    name = "REMOTENODEDESCRIPTOR"
+    fields_desc = [
+        ShortEnumField("type", 0, link_state_node_descriptor_sub_tlv),
+        ShortField("length", 0)
+    ]
+
+class BGPLinkStateNodeNLRI(Packet):
+    name = "NODENLRI"
+    fields_desc = [
+        ByteEnumField("protocol_id", 0, link_state_protocol_id),
+        BitField("identifier", 0, size=64),
+        # FieldLenField("descriptor_length", None, length_of="local_node_descriptors"),
+        # PacketListField(    
+        #     "local_node_descriptors", 
+        #     [], 
+        #     BGPLinkStateLocalNodeDescriptor, 
+        # )           
+    ]
+    
+class BGPLinkStateLinkNLRI(Packet):
+    name = "LINKNLRI"
+    fields_desc = [
+        ByteEnumField("protocol_id", 0, link_state_protocol_id),
+        BitFieldLenField("identifier", 0, size=64),
+    ]
+    
+class BGPLinkStateIpv4TopologyNLRI(Packet):
+    name = "IPv4TopologyNLRI"
+    fields_desc = [
+        ByteEnumField("protocol_id", 0, link_state_protocol_id),       
+        BitFieldLenField("identifier", 0, size=64),
+    ]
+
+class BGPLinkStateIpv6TopologyNLRI(Packet):
+    name = "IPv6TopologyNLRI"
+    fields_desc = [
+        ByteEnumField("protocol_id", 0, link_state_protocol_id),
+        BitFieldLenField("identifier", 0, size=64)
+    ]
+    
+
+
+    
+bind_layers(BGPLinkStateNLRI, BGPLinkStateNodeNLRI, {"type": 1})
+bind_layers(BGPLinkStateNLRI, BGPLinkStateLinkNLRI, {"type": 2})
+bind_layers(BGPLinkStateNLRI, BGPLinkStateIpv4TopologyNLRI, {"type": 3})
+bind_layers(BGPLinkStateNLRI, BGPLinkStateIpv6TopologyNLRI, {"type": 4})
+# bind_layers(BGPLinkStateNodeNLRI, BGPLinkStateLocalNodeDescriptorNLRI, {"type": 256})
+# bind_layers(BGPLinkStateLocalNodeDescriptor, BGPLinkStateLocalNodeDescriptorAutonomousSystem,{'type': 512} )
+# bind_layers(BGPLinkStateLocalNodeDescriptor, BGPLinkStateLocalNodeDescriptorBgpLsId,{'type': 513} )
+# bind_layers(BGPLinkStateNodeNLRI, BGPLinkStateLocalNodeDescriptor)
+# bind_layers(BGPLinkStateNodeNLRI, BGPLinkStateRemoteNodeDescriptor, {"type": 257})
 #
 # UPDATE
 #
@@ -2393,6 +2555,10 @@ class _ORFNLRIPacketField(PacketField):
         elif pkt.afi == 2:
             # IPv6
             ret = BGPNLRI_IPv6(m)
+
+        elif pkt.afi == 16388:
+            # IPv4 Link State
+            ret = BGPNLRI_IPv4(m)
 
         else:
             ret = conf.raw_layer(m)
